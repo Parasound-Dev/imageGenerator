@@ -690,22 +690,28 @@ def select_gradient_with_preview(resized_img, cutout, text_input, preview_canvas
     top_lines, bottom_lines = parse_text_blocks(text_input)
 
     gradient_options = {
-        "1": ("#2c3e50", "#bdc3c7"),
-        "2": ("#0f2027", "#2c5364"),
-        "3": ("#1a1a1a", "#272727"),
-        "4": ("#E7B95F", "#FFF4D6"),
-        "5": ("#E7B95F", "#4D217A"),
-        "6": ("#E7B95F", "#1A1A1A")
+        # 1 — KEEP AS IS
+        "1": ("#1A1A1A", "#272727"),  # Subtle Charcoal
+        # 2 — Warm Black (luxury / legacy)
+        "2": ("#141414", "#1F1A16"),
+        # 3 — Deep Plum (awards / prestige)
+        "3": ("#2B1B2E", "#120C14"),
+        # 4 — Midnight Blue (technical prestige)
+        "4": ("#0F1C2E", "#050A14"),
+        # 5 — Graphite Green-Gray (engineering / inside-the-unit)
+        "5": ("#1B2320", "#0E1412"),
+        # 6 — Gold Accent to Warm Black (brand, restrained)
+        "6": ("#E7B95F", "#1F1A16")
     }
 
     while True:
         print("\nChoose gradient style:")
-        print("1 = Soft Steel (#2C3E50 → #BDC3C7)")
-        print("2 = Midnight Fade (#0F2027 → #2C5364)")
-        print("3 = Subtle Charcoal (#1A1A1A → #272727)")
-        print("4 = Brand to Cream (#E7B95F → #FFF4D6)")
-        print("5 = Brand to Brand Purple (#E7B95F → #4D217A)")
-        print("6 = Brand Gold to Charcoal (#E7B95F → #1A1A1A)")
+        print("1 = Subtle Charcoal (#1A1A1A → #272727)")
+        print("2 = Warm Black (#141414 → #1F1A16)")
+        print("3 = Deep Plum – Award (#2B1B2E → #120C14)")
+        print("4 = Midnight Blue – Technical (#0F1C2E → #050A14)")
+        print("5 = Graphite Green – Engineering (#1B2320 → #0E1412)")
+        print("6 = Gold Accent to Warm Black (#E7B95F → #1F1A16)")
         print("custom = Enter your own two hex colors")
         print("Leave blank to auto-detect from image background (edge average)")
         choice = input("Your choice (1–6, custom, or blank): ").strip()
