@@ -1,5 +1,6 @@
 import os
 import io
+#Need to register these on DBS computer
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageFilter
 from rembg import remove, new_session
