@@ -288,6 +288,7 @@ def compose_image(
     center_text_blocks=CENTER_TEXT_BLOCKS,
     single_side_anchor_top=SINGLE_SIDE_ANCHOR_TOP,
     single_side_anchor_bottom=SINGLE_SIDE_ANCHOR_BOTTOM,
+    text_scale=1.0,  # <--- NEW: Manual text scale override
 ):
     if canvas_size is None or len(canvas_size) != 2:
         raise ValueError("compose_image requires an explicit canvas_size=(width, height)")
@@ -515,6 +516,17 @@ def compose_image(
                 break
             tries += 1
 
+    # --- NEW: Apply manual text scale override after auto-layout resolves ---
+    if text_scale != 1.0:
+        if has_top:
+            top_fs = max(10, int(top_fs * text_scale))
+            font_top = load_font(top_fs)
+            top_h = compute_block_height(top_lines, font_top, line_spacing)
+        if has_bottom:
+            bottom_fs = max(10, int(bottom_fs * text_scale))
+            font_bottom = load_font(bottom_fs)
+            bottom_h = compute_block_height(bottom_lines, font_bottom, line_spacing)
+
     gap_top = base_gap if has_top else 0
     gap_bottom = base_gap if has_bottom else 0
 
@@ -689,6 +701,8 @@ def load_and_remove_bg(input_path):
 # === Gradient selection with preview ===
 def select_gradient_with_preview(resized_img, cutout, text_input, preview_canvas_size):
     top_lines, bottom_lines = parse_text_blocks(text_input)
+    text_scale = 1.0  # <--- NEW: Track text scaling in the interactive loop
+    bg_top, bg_bot = None, None
 
     gradient_options = {
         # 1 — KEEP AS IS
@@ -706,34 +720,36 @@ def select_gradient_with_preview(resized_img, cutout, text_input, preview_canvas
     }
 
     while True:
-        print("\nChoose gradient style:")
-        print("1 = Subtle Charcoal (#1A1A1A → #272727)")
-        print("2 = Warm Black (#141414 → #1F1A16)")
-        print("3 = Deep Plum – Award (#2B1B2E → #120C14)")
-        print("4 = Midnight Blue – Technical (#0F1C2E → #050A14)")
-        print("5 = Graphite Green – Engineering (#1B2320 → #0E1412)")
-        print("6 = Gold Accent to Warm Black (#E7B95F → #1F1A16)")
-        print("custom = Enter your own two hex colors")
-        print("Leave blank to auto-detect from image background (edge average)")
-        choice = input("Your choice (1–6, custom, or blank): ").strip()
+        # Only prompt for gradient if we haven't picked one yet (allows looping for text scale)
+        if not bg_top:
+            print("\nChoose gradient style:")
+            print("1 = Subtle Charcoal (#1A1A1A → #272727)")
+            print("2 = Warm Black (#141414 → #1F1A16)")
+            print("3 = Deep Plum – Award (#2B1B2E → #120C14)")
+            print("4 = Midnight Blue – Technical (#0F1C2E → #050A14)")
+            print("5 = Graphite Green – Engineering (#1B2320 → #0E1412)")
+            print("6 = Gold Accent to Warm Black (#E7B95F → #1F1A16)")
+            print("custom = Enter your own two hex colors")
+            print("Leave blank to auto-detect from image background (edge average)")
+            choice = input("Your choice (1–6, custom, or blank): ").strip()
 
-        if choice.lower() == "custom":
-            top_hex = input("Top gradient color (e.g. #ff0000): ").strip()
-            bottom_hex = input("Bottom gradient color (e.g. #000000): ").strip()
-            try:
-                bg_top = ImageColor.getrgb(top_hex)
-                bg_bot = ImageColor.getrgb(bottom_hex)
-            except ValueError:
-                print("Invalid color. Reverting to auto background.")
+            if choice.lower() == "custom":
+                top_hex = input("Top gradient color (e.g. #ff0000): ").strip()
+                bottom_hex = input("Bottom gradient color (e.g. #000000): ").strip()
+                try:
+                    bg_top = ImageColor.getrgb(top_hex)
+                    bg_bot = ImageColor.getrgb(bottom_hex)
+                except ValueError:
+                    print("Invalid color. Reverting to auto background.")
+                    bg_top = get_dominant_edge_color(resized_img)
+                    bg_bot = tuple(max(0, c - 40) for c in bg_top)
+            elif choice in gradient_options:
+                th, bh = gradient_options[choice]
+                bg_top = ImageColor.getrgb(th)
+                bg_bot = ImageColor.getrgb(bh)
+            else:
                 bg_top = get_dominant_edge_color(resized_img)
                 bg_bot = tuple(max(0, c - 40) for c in bg_top)
-        elif choice in gradient_options:
-            th, bh = gradient_options[choice]
-            bg_top = ImageColor.getrgb(th)
-            bg_bot = ImageColor.getrgb(bh)
-        else:
-            bg_top = get_dominant_edge_color(resized_img)
-            bg_bot = tuple(max(0, c - 40) for c in bg_top)
 
         preview_img = compose_image(
             cutout, bg_top, bg_bot, top_lines, bottom_lines,
@@ -745,14 +761,33 @@ def select_gradient_with_preview(resized_img, cutout, text_input, preview_canvas
             center_text_blocks=CENTER_TEXT_BLOCKS,
             single_side_anchor_top=SINGLE_SIDE_ANCHOR_TOP,
             single_side_anchor_bottom=SINGLE_SIDE_ANCHOR_BOTTOM,
+            text_scale=text_scale, # <--- NEW
         )
         preview_img.show()
-        confirm = input("Use this gradient? (y/n): ").strip().lower()
-        if confirm == 'y':
-            return bg_top, bg_bot
+        
+        # --- NEW: Interactive adjustments loop ---
+        print("\nPreview generated! How does it look?")
+        print("  y = Accept and continue")
+        print("  g = Change gradient")
+        print("  + = Increase text size (+10%)")
+        print("  - = Decrease text size (-10%)")
+        confirm = input("Your choice (y/g/+/-): ").strip().lower()
 
-# === One-shot renderer (no gradient selection here) ===
-def render_and_save(cutout, resized_img, text_input, canvas_size, output_path, bg_colors):
+        if confirm == 'y':
+            return bg_top, bg_bot, text_scale
+        elif confirm == 'g':
+            bg_top = None  # Reset to trigger gradient prompt again
+        elif confirm == '+':
+            text_scale += 0.1
+            print(f"Text increased. (Scale multiplier: {text_scale:.1f}x)")
+        elif confirm == '-':
+            text_scale -= 0.1
+            print(f"Text decreased. (Scale multiplier: {text_scale:.1f}x)")
+        else:
+            print("Invalid input. Please try again.")
+
+# === One-shot renderer ===
+def render_and_save(cutout, resized_img, text_input, canvas_size, output_path, bg_colors, text_scale=1.0):
     top_lines, bottom_lines = parse_text_blocks(text_input)
     bg_top, bg_bot = bg_colors
     result = compose_image(
@@ -765,6 +800,7 @@ def render_and_save(cutout, resized_img, text_input, canvas_size, output_path, b
         center_text_blocks=CENTER_TEXT_BLOCKS,
         single_side_anchor_top=SINGLE_SIDE_ANCHOR_TOP,
         single_side_anchor_bottom=SINGLE_SIDE_ANCHOR_BOTTOM,
+        text_scale=text_scale, # <--- NEW
     )
     result.save(output_path, format="JPEG", quality=95)
     print(f"✅ Saved: {output_path}")
@@ -779,17 +815,19 @@ def remove_background_and_add_gradient(input_path, output_path, text_input, canv
     if resized_img is None or cutout is None:
         resized_img, cutout = load_and_remove_bg(input_path)
 
+    text_scale = 1.0 # <--- NEW
     if bg_colors is None:
         if preview:
             if preview_canvas_size is None:
                 preview_canvas_size = canvas_size
-            bg_colors = select_gradient_with_preview(resized_img, cutout, text_input, preview_canvas_size)
+            bg_colors_top, bg_colors_bot, text_scale = select_gradient_with_preview(resized_img, cutout, text_input, preview_canvas_size)
+            bg_colors = (bg_colors_top, bg_colors_bot)
         else:
             top_col = get_dominant_edge_color(resized_img)
             bot_col = tuple(max(0, c - 40) for c in top_col)
             bg_colors = (top_col, bot_col)
 
-    render_and_save(cutout, resized_img, text_input, canvas_size, output_path, bg_colors)
+    render_and_save(cutout, resized_img, text_input, canvas_size, output_path, bg_colors, text_scale)
     return bg_colors, cutout, resized_img
 
 # === Main ===
@@ -831,7 +869,7 @@ def main():
 
     if key_choice == "ALL":
         preview_canvas = PLATFORM_SPECS[PREVIEW_KEY_FOR_ALL]["size"]
-        bg_top, bg_bot = select_gradient_with_preview(resized_img, cutout, user_text, preview_canvas)
+        bg_top, bg_bot, text_scale = select_gradient_with_preview(resized_img, cutout, user_text, preview_canvas)
         chosen_colors = (bg_top, bg_bot)
 
         for key, _desc in PLATFORM_MENU:
@@ -839,7 +877,7 @@ def main():
             w, h = canvas_size
             output_name = f"{base}_{key}_{w}x{h}.jpg"
             output_path = os.path.join(finished_folder, output_name)
-            render_and_save(cutout, resized_img, user_text, canvas_size, output_path, chosen_colors)
+            render_and_save(cutout, resized_img, user_text, canvas_size, output_path, chosen_colors, text_scale)
 
         print("🎉 Done generating all variants.")
         return
@@ -849,8 +887,9 @@ def main():
     output_name = f"{base}_{key_choice}_{w}x{h}.jpg"
     output_path = os.path.join(finished_folder, output_name)
 
-    chosen_colors = select_gradient_with_preview(resized_img, cutout, user_text, canvas_size)
-    render_and_save(cutout, resized_img, user_text, canvas_size, output_path, chosen_colors)
+    chosen_colors_top, chosen_colors_bot, text_scale = select_gradient_with_preview(resized_img, cutout, user_text, canvas_size)
+    chosen_colors = (chosen_colors_top, chosen_colors_bot)
+    render_and_save(cutout, resized_img, user_text, canvas_size, output_path, chosen_colors, text_scale)
     print("✅ Finished.")
 
 if __name__ == "__main__":
