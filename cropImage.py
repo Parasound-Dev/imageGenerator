@@ -33,7 +33,7 @@ PLATFORM_RATIOS = {
 # Setup Paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'imageGeneratorAssets'))
-INPUT_DIR = os.path.join(ASSETS_DIR, 'imageCropper Image')
+INPUT_DIR = os.path.join(ASSETS_DIR, 'imageCropper Input')
 OUTPUT_DIR = os.path.join(ASSETS_DIR, 'imageCropper Output')
 
 def setup_directories():
