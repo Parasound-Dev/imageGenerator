@@ -27,7 +27,7 @@ GEMINI_API_KEY = p_secrets.GEMINI_KEY
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 # ==========================================
 
-# Define Target Aspect Ratios per Platform (For the AI to choose from if cropping is needed)
+# Define Target Aspect Ratios per Platform
 PLATFORM_RATIOS = {
     "instagram": ["1:1", "4:5", "1.91:1"],
     "threads": ["1:1", "4:5", "1.91:1"],
@@ -36,12 +36,11 @@ PLATFORM_RATIOS = {
 }
 
 # Define Acceptable Native Bounds (Width / Height)
-# If the original image ratio falls between these numbers, NO action is needed.
 PLATFORM_BOUNDS = {
-    "instagram": (0.8, 1.91),     # 4:5 to 1.91:1
-    "threads": (0.8, 1.91),       # 4:5 to 1.91:1
-    "facebook": (0.5625, 2.0),    # 9:16 to 2:1 (Very forgiving)
-    "linkedin": (0.4, 2.5)        # Highly forgiving
+    "instagram": (0.8, 1.91),
+    "threads": (0.8, 1.91),
+    "facebook": (0.5625, 2.0),
+    "linkedin": (0.4, 2.5)
 }
 
 # Setup Paths
@@ -65,12 +64,63 @@ def is_image_acceptable(image_path, platform):
         min_ratio, max_ratio = PLATFORM_BOUNDS[platform]
         return min_ratio <= ratio <= max_ratio
 
-def get_crop_data_from_ai(image_path, platform, provider):
+def does_image_match_anchor(image_path, anchor_ratio):
+    with Image.open(image_path) as img:
+        orig_w, orig_h = img.size
+        ratio = orig_w / orig_h
+        t_w, t_h = map(float, anchor_ratio.split(':'))
+        target = t_w / t_h
+        # Allow a tiny 2% margin of error for pixel rounding
+        return math.isclose(ratio, target, rel_tol=0.02)
+
+def get_anchor_ratio_from_ai(image_paths, platform, provider):
     allowed_ratios = PLATFORM_RATIOS[platform]
+    prompt = f"""
+    You are an expert social media manager preparing a multi-image carousel for {platform}. 
+    Look at ALL the attached images. Determine the SINGLE best aspect ratio from this allowed list: {allowed_ratios} that will work best for the entire group, minimizing the need for heavy cropping or padding across the set.
+    
+    Respond ONLY in valid JSON format like this:
+    {{
+        "anchor_ratio": "4:5"
+    }}
+    """
+
+    if provider == "openai":
+        content_list = [{"type": "text", "text": prompt}]
+        for path in image_paths:
+            base64_img = encode_image(path)
+            content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}})
+            
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": content_list}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content).get("anchor_ratio", "1:1")
+        
+    elif provider == "gemini":
+        contents_list = [prompt]
+        for path in image_paths:
+            contents_list.append(Image.open(path))
+            
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=contents_list,
+            config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text).get("anchor_ratio", "1:1")
+
+def get_crop_data_from_ai(image_path, platform, provider, forced_ratio=None):
+    if forced_ratio:
+        ratio_instructions = f"You MUST use the aspect ratio {forced_ratio}. Do not choose any other ratio."
+    else:
+        ratio_instructions = f"Determine the best aspect ratio from this allowed list for {platform}: {PLATFORM_RATIOS[platform]}."
     
     prompt = f"""
     You are an expert social media image editor. 
-    Analyze the attached image and determine the best aspect ratio from this allowed list for {platform}: {allowed_ratios}.
+    Analyze the attached image.
+    
+    {ratio_instructions}
     
     First, decide whether to "crop" or "pad" the image:
     - Choose "pad" if there are multiple critical elements (like a face AND an award) that span across the image, and forcing a crop would cut them off.
@@ -81,7 +131,7 @@ def get_crop_data_from_ai(image_path, platform, provider):
     Respond ONLY in valid JSON format like this:
     {{
         "action": "pad", 
-        "aspect_ratio": "4:5",
+        "aspect_ratio": "{forced_ratio if forced_ratio else '4:5'}",
         "focal_x": 0.5,
         "focal_y": 0.5
     }}
@@ -188,44 +238,71 @@ def main():
         return
 
     image_files = [f for f in os.listdir(INPUT_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    image_paths = [os.path.join(INPUT_DIR, f) for f in image_files]
     
     if not image_files:
         print(f"No images found in {INPUT_DIR}")
         return
         
+    is_multi_image = len(image_files) > 1
+    if is_multi_image:
+        print(f"Detected {len(image_files)} images. Enabling Carousel/Batch Mode for supported platforms.")
+
     providers = ["openai", "gemini"]
         
-    for filename in image_files:
-        filepath = os.path.join(INPUT_DIR, filename)
+    for platform in selected_platforms:
+        platform_out_dir = os.path.join(OUTPUT_DIR, platform)
+        os.makedirs(platform_out_dir, exist_ok=True)
         
-        print(f"\nProcessing: {filename}")
+        # Facebook always runs individually. Others group up if multi-image.
+        needs_anchor = is_multi_image and platform != "facebook"
         
-        for platform in selected_platforms:
-            platform_out_dir = os.path.join(OUTPUT_DIR, platform)
-            os.makedirs(platform_out_dir, exist_ok=True)
+        for provider in providers:
+            anchor_ratio = None
             
-            # --- THE NEW PRE-CHECK ---
-            if is_image_acceptable(filepath, platform):
-                print(f"  -> {platform.upper()} natively accepts this image's ratio. Bypassing AI...")
-                out_filepath = os.path.join(platform_out_dir, f"native_{platform}_{filename}")
-                shutil.copy2(filepath, out_filepath)
-                print(f"     Saved unedited original to {out_filepath}")
-                continue # Skip the AI loop entirely for this platform
-            
-            # If the image is NOT acceptable, call the AIs to process it
-            for provider in providers:
-                print(f"  -> Getting AI crop data for {platform} via {provider.upper()}...")
+            if needs_anchor:
+                print(f"\n[{platform.upper()} | {provider.upper()}] Analyzing entire set to find Anchor Ratio...")
                 try:
-                    crop_data = get_crop_data_from_ai(filepath, platform, provider)
+                    anchor_ratio = get_anchor_ratio_from_ai(image_paths, platform, provider)
+                    print(f"  -> Selected Anchor Ratio: {anchor_ratio}")
+                except Exception as e:
+                    print(f"  -> Failed to get anchor ratio: {e}")
+                    continue
+
+            for filename in image_files:
+                filepath = os.path.join(INPUT_DIR, filename)
+                print(f"\n  Processing {filename} for {platform} via {provider.upper()}...")
+                
+                # --- SMART BYPASS LOGIC ---
+                if needs_anchor:
+                    # Multi-image mode (IG, Threads, LinkedIn): Must match the anchor ratio exactly
+                    if does_image_match_anchor(filepath, anchor_ratio):
+                        print(f"    -> Native image perfectly matches anchor ratio ({anchor_ratio}). Bypassing AI...")
+                        out_filepath = os.path.join(platform_out_dir, f"native_{provider}_{platform}_{filename}")
+                        shutil.copy2(filepath, out_filepath)
+                        continue
+                else:
+                    # Single-image mode OR Facebook: Just check if it falls within acceptable API bounds
+                    # We only need to check this once per platform (not per provider), but keeping it here for cleanly separated outputs
+                    if is_image_acceptable(filepath, platform):
+                        print(f"    -> Native ratio falls within acceptable bounds for {platform.upper()}. Bypassing AI...")
+                        out_filepath = os.path.join(platform_out_dir, f"native_{platform}_{filename}")
+                        shutil.copy2(filepath, out_filepath)
+                        # Break the provider loop so we don't save two copies of the native image
+                        break 
+                
+                # --- AI PROCESSING ---
+                try:
+                    crop_data = get_crop_data_from_ai(filepath, platform, provider, forced_ratio=anchor_ratio)
                     action_taken = crop_data.get('action', 'crop').upper()
-                    print(f"     {provider.upper()} chose {action_taken} with ratio {crop_data['aspect_ratio']}")
+                    print(f"    -> AI chose {action_taken} with ratio {crop_data['aspect_ratio']}")
                     
                     out_filepath = os.path.join(platform_out_dir, f"{provider}_{platform}_{filename}")
                     process_image(filepath, out_filepath, crop_data)
-                    print(f"     Saved to {out_filepath}")
+                    print(f"    -> Saved to {out_filepath}")
                     
                 except Exception as e:
-                    print(f"     Error processing {platform} via {provider}: {e}")
+                    print(f"    -> Error: {e}")
 
 if __name__ == "__main__":
     main()
