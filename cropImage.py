@@ -4,22 +4,27 @@ import json
 import math
 from PIL import Image
 from openai import OpenAI
+import google.generativeai as genai
 from parasound_defaults import p_secrets
 
 # ==========================================
-# OPENAI CONFIGURATION
-# Map your company's shared secrets here
+# OPENAI & GEMINI CONFIGURATION
 # ==========================================
+# OpenAI Setup
 API_KEY = p_secrets.OPENAI_API_KEY
-ORG_ID = os.getenv("OPENAI_ORG_ID", None)       # Optional: e.g., "org-..."
-PROJECT_ID = os.getenv("OPENAI_PROJECT_ID", None) # Optional: e.g., "proj-..."
+ORG_ID = os.getenv("OPENAI_ORG_ID", None)       
+PROJECT_ID = os.getenv("OPENAI_PROJECT_ID", None) 
 
-# Initialize OpenAI Client explicitly
 client = OpenAI(
     api_key=API_KEY,
     organization=ORG_ID,
     project=PROJECT_ID
 )
+
+# Gemini Setup
+GEMINI_API_KEY = p_secrets.GEMINI_KEY
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel('gemini-1.5-pro')
 # ==========================================
 
 # Define Aspect Ratios per Platform
@@ -44,7 +49,7 @@ def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def get_crop_data_from_ai(base64_image, platform):
+def get_crop_data_from_ai(image_path, platform, provider):
     allowed_ratios = PLATFORM_RATIOS[platform]
     
     prompt = f"""
@@ -66,21 +71,30 @@ def get_crop_data_from_ai(base64_image, platform):
     }}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ],
-        response_format={"type": "json_object"}
-    )
-    
-    return json.loads(response.choices[0].message.content)
+    if provider == "openai":
+        base64_image = encode_image(image_path)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]
+                }
+            ],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+        
+    elif provider == "gemini":
+        img_pil = Image.open(image_path)
+        response = gemini_model.generate_content(
+            [prompt, img_pil],
+            generation_config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text)
 
 def process_image(image_path, output_path, crop_data):
     # Convert to RGB to ensure smooth color sampling and saving
@@ -180,29 +194,30 @@ def main():
         print(f"No images found in {INPUT_DIR}")
         return
         
+    providers = ["openai", "gemini"]
+        
     for filename in image_files:
         filepath = os.path.join(INPUT_DIR, filename)
-        base64_img = encode_image(filepath)
         
         print(f"\nProcessing: {filename}")
         
         for platform in selected_platforms:
-            print(f"  -> Getting AI crop data for {platform}...")
-            try:
-                crop_data = get_crop_data_from_ai(base64_img, platform)
-                action_taken = crop_data.get('action', 'crop').upper()
-                print(f"     AI chose {action_taken} with ratio {crop_data['aspect_ratio']}")
-                
-                # Setup specific output folder per platform
-                platform_out_dir = os.path.join(OUTPUT_DIR, platform)
-                os.makedirs(platform_out_dir, exist_ok=True)
-                
-                out_filepath = os.path.join(platform_out_dir, f"{platform}_{filename}")
-                process_image(filepath, out_filepath, crop_data)
-                print(f"     Saved to {out_filepath}")
-                
-            except Exception as e:
-                print(f"     Error processing {platform}: {e}")
+            platform_out_dir = os.path.join(OUTPUT_DIR, platform)
+            os.makedirs(platform_out_dir, exist_ok=True)
+            
+            for provider in providers:
+                print(f"  -> Getting AI crop data for {platform} via {provider.upper()}...")
+                try:
+                    crop_data = get_crop_data_from_ai(filepath, platform, provider)
+                    action_taken = crop_data.get('action', 'crop').upper()
+                    print(f"     {provider.upper()} chose {action_taken} with ratio {crop_data['aspect_ratio']}")
+                    
+                    out_filepath = os.path.join(platform_out_dir, f"{provider}_{platform}_{filename}")
+                    process_image(filepath, out_filepath, crop_data)
+                    print(f"     Saved to {out_filepath}")
+                    
+                except Exception as e:
+                    print(f"     Error processing {platform} via {provider}: {e}")
 
 if __name__ == "__main__":
     main()
