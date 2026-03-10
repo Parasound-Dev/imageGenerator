@@ -4,7 +4,7 @@ import json
 import math
 from PIL import Image
 from openai import OpenAI
-import google.generativeai as genai
+from google import genai
 from parasound_defaults import p_secrets
 
 # ==========================================
@@ -23,8 +23,7 @@ client = OpenAI(
 
 # Gemini Setup
 GEMINI_API_KEY = p_secrets.GEMINI_KEY
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-1.5-pro')
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 # ==========================================
 
 # Define Aspect Ratios per Platform
@@ -90,9 +89,10 @@ def get_crop_data_from_ai(image_path, platform, provider):
         
     elif provider == "gemini":
         img_pil = Image.open(image_path)
-        response = gemini_model.generate_content(
-            [prompt, img_pil],
-            generation_config={"response_mime_type": "application/json"}
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[prompt, img_pil],
+            config={"response_mime_type": "application/json"}
         )
         return json.loads(response.text)
 
