@@ -1,7 +1,7 @@
 import os
 import io
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageFilter
 from rembg import remove, new_session
 
 # New deps for emoji handling
@@ -109,7 +109,7 @@ PLATFORM_MENU = [
 PREVIEW_KEY_FOR_ALL = "facebook"
 
 # Cache rembg session once (performance)
-RMBG_SESSION = new_session("birefnet-general")
+RMBG_SESSION = new_session("isnet-general-use")
 
 # === Utility ===
 def get_latest_image(folder):
@@ -152,21 +152,6 @@ def resize_if_needed(img, max_width=2048):
         nh = int((max_width / img.width) * img.height)
         return img.resize((max_width, nh), Image.LANCZOS)
     return img
-
-def preprocess_for_dark_subject(img_bytes: bytes) -> bytes:
-    """Boost contrast on white-background images so dark subjects separate cleanly."""
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    img = ImageEnhance.Contrast(img).enhance(1.5)
-    img = ImageEnhance.Sharpness(img).enhance(1.3)
-    out = io.BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue()
-
-def clean_alpha_mask(img: Image.Image, threshold: int = 30) -> Image.Image:
-    """Hard-threshold the alpha channel: below threshold → 0, above → 255."""
-    r, g, b, a = img.split()
-    a = a.point(lambda v: 0 if v < threshold else 255)
-    return Image.merge("RGBA", (r, g, b, a))
 
 def add_shadow(image,
                offset=SHADOW_OFFSET,
@@ -706,12 +691,9 @@ def load_and_remove_bg(input_path):
         input_data = f.read()
     original_img = Image.open(input_path).convert("RGBA")
     resized_img = resize_if_needed(original_img)
-    # Preprocess to help separation of dark subjects on white backgrounds
-    input_data = preprocess_for_dark_subject(input_data)
     # Background removal (one time)
     output_data = remove(input_data, session=RMBG_SESSION)
     cutout = Image.open(io.BytesIO(output_data)).convert("RGBA")
-    cutout = clean_alpha_mask(cutout)
     cutout = resize_if_needed(cutout)
     return resized_img, cutout
 
