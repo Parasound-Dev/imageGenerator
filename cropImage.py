@@ -3,7 +3,7 @@ import base64
 import json
 import math
 import shutil
-from PIL import Image
+from PIL import Image, ImageOps
 from openai import OpenAI
 from google import genai
 from parasound_defaults import p_secrets
@@ -57,15 +57,21 @@ def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
+def open_image_correctly(image_path):
+    """Opens an image and automatically applies EXIF rotation if needed."""
+    img = Image.open(image_path)
+    img = ImageOps.exif_transpose(img)
+    return img
+
 def is_image_acceptable(image_path, platform):
-    with Image.open(image_path) as img:
+    with open_image_correctly(image_path) as img:
         orig_w, orig_h = img.size
         ratio = orig_w / orig_h
         min_ratio, max_ratio = PLATFORM_BOUNDS[platform]
         return min_ratio <= ratio <= max_ratio
 
 def does_image_match_anchor(image_path, anchor_ratio):
-    with Image.open(image_path) as img:
+    with open_image_correctly(image_path) as img:
         orig_w, orig_h = img.size
         ratio = orig_w / orig_h
         t_w, t_h = map(float, anchor_ratio.split(':'))
@@ -101,7 +107,7 @@ def get_anchor_ratio_from_ai(image_paths, platform, provider):
     elif provider == "gemini":
         contents_list = [prompt]
         for path in image_paths:
-            contents_list.append(Image.open(path))
+            contents_list.append(open_image_correctly(path))
             
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
@@ -155,7 +161,7 @@ def get_crop_data_from_ai(image_path, platform, provider, forced_ratio=None):
         return json.loads(response.choices[0].message.content)
         
     elif provider == "gemini":
-        img_pil = Image.open(image_path)
+        img_pil = open_image_correctly(image_path)
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[prompt, img_pil],
@@ -164,7 +170,7 @@ def get_crop_data_from_ai(image_path, platform, provider, forced_ratio=None):
         return json.loads(response.text)
 
 def process_image(image_path, output_path, crop_data):
-    img = Image.open(image_path).convert("RGB")
+    img = open_image_correctly(image_path).convert("RGB")
     orig_w, orig_h = img.size
     
     ratio_parts = crop_data['aspect_ratio'].split(':')
@@ -275,21 +281,21 @@ def main():
                 
                 # --- SMART BYPASS LOGIC ---
                 if needs_anchor:
-                    # Multi-image mode (IG, Threads, LinkedIn): Must match the anchor ratio exactly
+                    # Multi-image mode: Must match the anchor ratio exactly
                     if does_image_match_anchor(filepath, anchor_ratio):
-                        print(f"    -> Native image perfectly matches anchor ratio ({anchor_ratio}). Bypassing AI...")
                         out_filepath = os.path.join(platform_out_dir, f"native_{provider}_{platform}_{filename}")
-                        shutil.copy2(filepath, out_filepath)
+                        if not os.path.exists(out_filepath):
+                            print(f"    -> Native image perfectly matches anchor ratio ({anchor_ratio}). Bypassing AI...")
+                            shutil.copy2(filepath, out_filepath)
                         continue
                 else:
-                    # Single-image mode OR Facebook: Just check if it falls within acceptable API bounds
-                    # We only need to check this once per platform (not per provider), but keeping it here for cleanly separated outputs
+                    # Single-image mode OR Facebook: Check if it falls within acceptable API bounds
                     if is_image_acceptable(filepath, platform):
-                        print(f"    -> Native ratio falls within acceptable bounds for {platform.upper()}. Bypassing AI...")
                         out_filepath = os.path.join(platform_out_dir, f"native_{platform}_{filename}")
-                        shutil.copy2(filepath, out_filepath)
-                        # Break the provider loop so we don't save two copies of the native image
-                        break 
+                        if not os.path.exists(out_filepath):
+                            print(f"    -> Native ratio falls within acceptable bounds for {platform.upper()}. Bypassing AI...")
+                            shutil.copy2(filepath, out_filepath)
+                        continue # Replaced the 'break' with 'continue' to keep looping through images!
                 
                 # --- AI PROCESSING ---
                 try:
