@@ -17,8 +17,8 @@ PLATFORMS = {
 BASE_CSS = """
 /* Pre-baked Gold Banner */
 .gold-banner {
-    background-color: #d32f2f; /* Changed to Parasound Red */
-    color: #ffffff; /* Changed to White */
+    background-color: #2b2721;
+    color: #e7b95f; /* Changed to White */
     font-family: "Archivo Narrow", system-ui, sans-serif;
     font-weight: bold;
     font-size: 1.2em;

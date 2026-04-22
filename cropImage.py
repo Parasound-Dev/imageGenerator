@@ -3,7 +3,7 @@ import base64
 import json
 import math
 import shutil
-from PIL import Image
+from PIL import Image, ImageOps
 from openai import OpenAI
 from google import genai
 from parasound_defaults import p_secrets
@@ -25,6 +25,8 @@ client = OpenAI(
 # Gemini Setup
 GEMINI_API_KEY = p_secrets.GEMINI_KEY
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+GEMINI_PRIMARY_MODEL = 'gemini-2.5-flash'
+GEMINI_FALLBACK_MODEL = 'gemini-2.0-flash'
 # ==========================================
 
 # Define Target Aspect Ratios per Platform
@@ -76,6 +78,21 @@ PLATFORM_DISPLAY_CONTEXT = {
     ),
 }
 
+def gemini_generate(contents, json_response=True):
+    """Call Gemini with automatic fallback from primary to fallback model on failure."""
+    config = {"response_mime_type": "application/json"} if json_response else {}
+    for model in [GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL]:
+        try:
+            response = gemini_client.models.generate_content(
+                model=model, contents=contents, config=config
+            )
+            return response
+        except Exception as e:
+            if model == GEMINI_PRIMARY_MODEL:
+                print(f"    -> Gemini {model} failed ({e}), retrying with {GEMINI_FALLBACK_MODEL}...")
+            else:
+                raise
+
 # Setup Paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'imageGeneratorAssets'))
@@ -92,6 +109,7 @@ def encode_image(image_path):
 
 def is_image_acceptable(image_path, platform):
     with Image.open(image_path) as img:
+        img = ImageOps.exif_transpose(img)
         orig_w, orig_h = img.size
         ratio = orig_w / orig_h
         min_ratio, max_ratio = PLATFORM_BOUNDS[platform]
@@ -99,6 +117,7 @@ def is_image_acceptable(image_path, platform):
 
 def does_image_match_anchor(image_path, anchor_ratio):
     with Image.open(image_path) as img:
+        img = ImageOps.exif_transpose(img)
         orig_w, orig_h = img.size
         ratio = orig_w / orig_h
         t_w, t_h = map(float, anchor_ratio.split(':'))
@@ -135,17 +154,14 @@ def get_anchor_ratio_from_ai(image_paths, platform, provider):
         contents_list = [prompt]
         for path in image_paths:
             contents_list.append(Image.open(path))
-            
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=contents_list,
-            config={"response_mime_type": "application/json"}
-        )
+
+        response = gemini_generate(contents_list)
         return json.loads(response.text).get("anchor_ratio", "1:1")
 
 def should_optimize_image(image_path, platform, provider):
     """Ask AI whether an image with an acceptable-but-not-ideal ratio should be adjusted."""
     with Image.open(image_path) as img:
+        img = ImageOps.exif_transpose(img)
         orig_w, orig_h = img.size
         current_ratio = orig_w / orig_h
 
@@ -194,11 +210,7 @@ def should_optimize_image(image_path, platform, provider):
 
     elif provider == "gemini":
         img_pil = Image.open(image_path)
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[prompt, img_pil],
-            config={"response_mime_type": "application/json"}
-        )
+        response = gemini_generate([prompt, img_pil])
         return json.loads(response.text)
 
 def get_crop_data_from_ai(image_path, platform, provider, forced_ratio=None):
@@ -247,15 +259,11 @@ def get_crop_data_from_ai(image_path, platform, provider, forced_ratio=None):
         
     elif provider == "gemini":
         img_pil = Image.open(image_path)
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[prompt, img_pil],
-            config={"response_mime_type": "application/json"}
-        )
+        response = gemini_generate([prompt, img_pil])
         return json.loads(response.text)
 
 def process_image(image_path, output_path, crop_data):
-    img = Image.open(image_path).convert("RGB")
+    img = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     orig_w, orig_h = img.size
     
     ratio_parts = crop_data['aspect_ratio'].split(':')
