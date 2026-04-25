@@ -131,7 +131,7 @@ def generate_image_for_platform(playwright, user_html: str, platform_key: str, o
 def main():
     platform_keys = choose_platforms()
     user_html = get_html_from_user()
-    out_dir = "output_images"
+    out_dir = r"C:\Users\Brett\Desktop\Automations\imageGeneratorAssets\textImage Finished"
     os.makedirs(out_dir, exist_ok=True)
 
     with sync_playwright() as playwright:
