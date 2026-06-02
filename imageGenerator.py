@@ -97,6 +97,7 @@ PLATFORM_SPECS = {
     "email":      {"size": (1200,  600), "desc": "Email Hero 2:1 (1200x600)"},
     "fb_link":    {"size": (1200,  628), "desc": "Facebook Link Share 1.91:1 (1200x628)"},
     "ig_story":   {"size": (1080, 1920), "desc": "IG Stories/Reels 9:16 (1080x1920)"},
+    "blog":       {"size": (1800, 1000), "desc": "Blog Banner ~16:9 (1800x1000)"},
 }
 PLATFORM_MENU = [
     ("facebook",  PLATFORM_SPECS["facebook"]["desc"]),
@@ -105,6 +106,7 @@ PLATFORM_MENU = [
     ("email",     PLATFORM_SPECS["email"]["desc"]),
     ("fb_link",   PLATFORM_SPECS["fb_link"]["desc"]),
     ("ig_story",  PLATFORM_SPECS["ig_story"]["desc"]),
+    ("blog",      PLATFORM_SPECS["blog"]["desc"]),
 ]
 PREVIEW_KEY_FOR_ALL = "facebook"
 
@@ -197,6 +199,95 @@ def load_font(size):
             continue
     return ImageFont.load_default()
 
+# Symbol-capable fallback fonts used when the primary font lacks a glyph
+# (e.g., Segoe UI Emoji doesn't contain Ω, μ, π, etc.)
+# Order: regular weights first so symbols match the surrounding text weight
+# rather than appearing bolder than the rest of the line.
+_SYMBOL_FALLBACK_FONTS = [
+    r"C:\Windows\Fonts\segoeui.ttf",    # Segoe UI (regular) — visually closest to primary
+    r"C:\Windows\Fonts\arial.ttf",      # Arial regular — has Greek/symbols
+    r"C:\Windows\Fonts\seguisym.ttf",   # Segoe UI Symbol — broad symbol coverage
+    r"C:\Windows\Fonts\calibri.ttf",
+]
+
+# Cache fallback fonts by size so we don't reload on every character
+_FALLBACK_FONT_CACHE = {}
+
+# Cache cmap lookups per font instance so we don't re-decode on every char
+_CMAP_CACHE = {}
+
+def _get_cmap(font: ImageFont.FreeTypeFont):
+    key = id(font)
+    if key in _CMAP_CACHE:
+        return _CMAP_CACHE[key]
+    cmap = None
+    # PIL's ImageFont.FreeTypeFont exposes the FreeType binding via .font.
+    # The cmap method lives on that inner binding, NOT on the outer object.
+    inner = getattr(font, "font", None)
+    if inner is not None and hasattr(inner, "getbestcmap"):
+        try:
+            cmap = inner.getbestcmap()
+        except Exception:
+            cmap = None
+    _CMAP_CACHE[key] = cmap
+    return cmap
+
+def _font_has_glyph(font: ImageFont.FreeTypeFont, ch: str) -> bool:
+    """Return True if the font contains a real glyph for this character."""
+    cmap = _get_cmap(font)
+    if cmap is not None:
+        # cmap maps codepoint -> glyph index. A glyph index of 0 = .notdef (missing).
+        gid = cmap.get(ord(ch))
+        return gid is not None and gid != 0
+    # Last-ditch heuristic: bbox of a missing glyph is degenerate
+    try:
+        bbox = font.getbbox(ch)
+        return bool(bbox) and (bbox[2] - bbox[0]) > 0
+    except Exception:
+        return True
+
+def _get_symbol_fallback_font(size: int) -> ImageFont.FreeTypeFont:
+    if size in _FALLBACK_FONT_CACHE:
+        return _FALLBACK_FONT_CACHE[size]
+    for path in _SYMBOL_FALLBACK_FONTS:
+        try:
+            f = ImageFont.truetype(path, size)
+            _FALLBACK_FONT_CACHE[size] = f
+            return f
+        except Exception:
+            continue
+    f = ImageFont.load_default()
+    _FALLBACK_FONT_CACHE[size] = f
+    return f
+
+def _is_in_symbol_range(ch: str) -> bool:
+    """
+    Unicode ranges that emoji-oriented fonts (like Segoe UI Emoji) typically lack.
+    Detected explicitly because cmap-based detection is unreliable for these fonts —
+    they sometimes map the codepoint to a .notdef/box glyph that registers as 'present'.
+    """
+    cp = ord(ch)
+    return (
+        0x0370 <= cp <= 0x03FF or  # Greek and Coptic (Ω, μ, π, α, β, etc.)
+        0x1F00 <= cp <= 0x1FFF or  # Greek Extended
+        0x20A0 <= cp <= 0x20CF or  # Currency Symbols (€, £, ¥, etc.)
+        0x2100 <= cp <= 0x214F or  # Letterlike Symbols (™, ℃, ℉, etc.)
+        0x2150 <= cp <= 0x218F or  # Number Forms (½, ⅓, etc.)
+        0x2190 <= cp <= 0x21FF or  # Arrows
+        0x2200 <= cp <= 0x22FF or  # Mathematical Operators
+        0x2300 <= cp <= 0x23FF or  # Miscellaneous Technical
+        0x25A0 <= cp <= 0x25FF     # Geometric Shapes
+    )
+
+def _font_for_char(primary: ImageFont.FreeTypeFont, ch: str) -> ImageFont.FreeTypeFont:
+    """Pick primary font if it covers ch, else a symbol fallback at the same size."""
+    # Force-route known symbol ranges to the fallback, bypassing unreliable cmap checks.
+    if _is_in_symbol_range(ch):
+        return _get_symbol_fallback_font(primary.size)
+    if _font_has_glyph(primary, ch):
+        return primary
+    return _get_symbol_fallback_font(primary.size)
+
 # Grapheme cluster splitter (handles ZWJ emoji sequences)
 _EMOJI_CLUSTER_RE = re.compile(r"\X", re.UNICODE)
 
@@ -219,7 +310,10 @@ def _measure_rich_text_width(text: str, font: ImageFont.FreeTypeFont) -> int:
         if EMOJI_MODE.lower() == "twemoji" and _is_emoji_cluster(cluster):
             width += lh  # emoji box equals line height
         else:
-            width += int(font.getlength(cluster if cluster else " "))
+            c = cluster if cluster else " "
+            # Use the same fallback font we'd actually draw with for accurate width
+            measure_font = _font_for_char(font, c[0]) if c else font
+            width += int(measure_font.getlength(c))
     return width
 
 def _draw_rich_line(
@@ -253,9 +347,22 @@ def _draw_rich_line(
                 continue
             except Exception:
                 pass
-        draw.text((cursor_x, y), cluster if cluster else " ", font=font,
+        c = cluster if cluster else " "
+        # Per-character fallback: if primary font lacks a glyph for this char
+        # (e.g., Segoe UI Emoji has no Ω), draw it with a symbol-capable font.
+        draw_font = _font_for_char(font, c[0]) if c else font
+        # Baseline alignment: PIL's default anchor draws text starting at the top
+        # of the ascender. When swapping to a fallback font with different metrics,
+        # the baselines won't align unless we offset by the difference in ascent.
+        if draw_font is not font:
+            primary_ascent, _ = font.getmetrics()
+            fb_ascent, _ = draw_font.getmetrics()
+            draw_y = y + (primary_ascent - fb_ascent)
+        else:
+            draw_y = y
+        draw.text((cursor_x, draw_y), c, font=draw_font,
                   fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
-        cursor_x += int(font.getlength(cluster if cluster else " "))
+        cursor_x += int(draw_font.getlength(c))
 
 def compute_block_height(lines, font, line_spacing):
     if not lines:
