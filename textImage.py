@@ -8,10 +8,11 @@ import textwrap
 from playwright.sync_api import sync_playwright
 
 PLATFORMS = {
-    "1": {"name": "instagram", "width": 1080, "height": 1350},
-    "2": {"name": "facebook",  "width": 1200, "height": 630},
-    "3": {"name": "linkedin",  "width": 1200, "height": 627},
-    "4": {"name": "threads",   "width": 1080, "height": 1350},
+    "1": {"name": "instagram",    "width": 1080, "height": 1350},
+    "2": {"name": "facebook",     "width": 1200, "height": 630},
+    "3": {"name": "linkedin",     "width": 1200, "height": 627},
+    "4": {"name": "threads",      "width": 1080, "height": 1350},
+    "5": {"name": "shopify_blog", "width": 1600, "height": 900},   # 16:9 blog featured image
 }
 
 BASE_CSS = """
@@ -50,14 +51,15 @@ def get_html_from_user() -> str:
 def choose_platforms():
     print(textwrap.dedent("""
         Which social image(s) would you like to generate?
-        1. Instagram (1080 x 1350)
-        2. Facebook  (1200 x 630)
-        3. LinkedIn  (1200 x 627)
-        4. Threads   (1080 x 1350)
-        5. All of the above
+        1. Instagram    (1080 x 1350)
+        2. Facebook     (1200 x 630)
+        3. LinkedIn     (1200 x 627)
+        4. Threads      (1080 x 1350)
+        5. Shopify Blog (1600 x 900)
+        6. All of the above
     """))
-    choice = input("Enter 1, 2, 3, 4, or 5: ").strip()
-    return list(PLATFORMS.keys()) if choice == "5" or choice not in PLATFORMS else [choice]
+    choice = input("Enter 1, 2, 3, 4, 5, or 6: ").strip()
+    return list(PLATFORMS.keys()) if choice == "6" or choice not in PLATFORMS else [choice]
 
 def compute_typography(width: int, height: int):
     aspect = height / float(width)
@@ -85,16 +87,34 @@ def build_full_html(user_html: str, width: int, height: int) -> str:
         width: 85%; text-align: center;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
     }}
+    /* == TEXT SIZING ==================================================
+       Base sizes are computed per-platform (see compute_typography).
+       To RESIZE an element, set a scale multiplier on it -- do NOT use
+       inline `font-size` in em/px:
+           <h1 style="--title-scale: 1.25">  -> 25% BIGGER title
+           <p  style="--text-scale: 1.4">    -> 40% BIGGER body text
+       The multiplier scales the element's OWN base size and behaves the
+       same on every platform. 1 = default, >1 bigger, <1 smaller.
+       (Why not em? Inline `font-size: 1.2em` on an <h1> resolves against
+        the PARENT's size -- here the wrapper, {typo['base']}px -- so it
+        SHRINKS the heading instead of growing it. Scale vars avoid that.)
+    */
+    :root {{
+        --base-size: {typo['base']}px;
+        --h1-size:   {typo['h1']}px;
+    }}
     h1 {{
         color: #ffffff;
         font-family: "Archivo Narrow", system-ui, sans-serif;
-        font-size: {typo['h1']}px; line-height: 1.1;
+        font-size: calc(var(--h1-size) * var(--title-scale, 1));
+        line-height: 1.1;
         letter-spacing: 0.05em; margin-right: -0.05em; /* FIXES OFF-CENTER */
         text-transform: uppercase; margin-top: 0; margin-bottom: 0.3em;
     }}
     p, span, div {{
         color: #F5F5F5; font-family: "Barlow", system-ui, sans-serif;
-        font-size: {typo['base']}px; line-height: {typo['lh']}px;
+        font-size: calc(var(--base-size) * var(--text-scale, 1));
+        line-height: 1.6;
     }}
     strong {{
         color: #E7B95F; font-family: "Archivo", system-ui, sans-serif;
